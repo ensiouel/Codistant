@@ -2,6 +2,8 @@ package assistant
 
 import (
 	"context"
+	"log/slog"
+	"slices"
 	"strings"
 
 	assistantpkg "codistant/pkg/assistant"
@@ -62,6 +64,32 @@ func (svc *Service) Chat(ctx context.Context, chatID int64, content string, fn a
 
 	c.AddMessage(assistantpkg.RoleAssistant, builder.String())
 
+	return nil
+}
+
+func (svc *Service) Pull(ctx context.Context, models []string) error {
+	list, err := svc.ollama.List(ctx)
+	if err != nil {
+		return err
+	}
+
+	for _, model := range models {
+		if slices.ContainsFunc(list.Models, func(m ollamaapi.ListModelResponse) bool { return model == m.Model }) {
+			continue
+		}
+
+		slog.Info("Pulling model", slog.String("name", model))
+
+		err = svc.ollama.Pull(ctx, &ollamaapi.PullRequest{
+			Model:  model,
+			Stream: optional.Pointer(false),
+		}, func(response ollamaapi.ProgressResponse) error {
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

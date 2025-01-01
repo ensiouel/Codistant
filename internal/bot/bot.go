@@ -10,12 +10,12 @@ import (
 	"codistant/internal/assistant"
 	"codistant/internal/config"
 	assistantpkg "codistant/pkg/assistant"
-	"codistant/pkg/optional"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	ollamaapi "github.com/ollama/ollama/api"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/riverqueue/river/rivermigrate"
 	"golang.org/x/time/rate"
 	"gopkg.in/telebot.v4"
 	"gopkg.in/telebot.v4/middleware"
@@ -37,7 +37,7 @@ func NewBot(conf config.Config) *Bot {
 		Poller: &telebot.LongPoller{Timeout: 10 * time.Second},
 	})
 	if err != nil {
-		return nil
+		panic(err)
 	}
 
 	ollama := ollamaapi.NewClient(&url.URL{
@@ -46,6 +46,10 @@ func NewBot(conf config.Config) *Bot {
 	}, http.DefaultClient)
 
 	assistantService := assistant.NewService(ollama)
+	err = assistantService.Pull(context.Background(), conf.Ollama.Models)
+	if err != nil {
+		panic(err)
+	}
 
 	db, err := pgxpool.New(context.Background(), "postgres://postgres:postgres@postgres:5432/codistant?sslmode=disable")
 	if err != nil {
@@ -53,6 +57,24 @@ func NewBot(conf config.Config) *Bot {
 	}
 
 	dbDriver := riverpgxv5.New(db)
+	{
+		migrator, err := rivermigrate.New(dbDriver, nil)
+		if err != nil {
+			panic(err)
+		}
+		for _, version := range migrator.AllVersions() {
+			_, err = migrator.Migrate(
+				context.Background(),
+				rivermigrate.DirectionUp,
+				&rivermigrate.MigrateOpts{
+					TargetVersion: version.Version,
+				},
+			)
+			if err != nil {
+				panic(err)
+			}
+		}
+	}
 
 	workers := river.NewWorkers()
 	river.AddWorker(workers, &ChatWorker{
@@ -60,12 +82,17 @@ func NewBot(conf config.Config) *Bot {
 		AssistantService: assistantService,
 	})
 
-	riverClient, err := river.NewClient(dbDriver, &river.Config{
-		Queues: map[string]river.QueueConfig{
-			river.QueueDefault: {MaxWorkers: 3},
+	riverClient, err := river.NewClient(
+		dbDriver,
+		&river.Config{
+			Queues: map[string]river.QueueConfig{
+				river.QueueDefault: {
+					MaxWorkers: 3,
+				},
+			},
+			Workers: workers,
 		},
-		Workers: workers,
-	})
+	)
 	if err != nil {
 		panic(err)
 	}
@@ -80,16 +107,6 @@ func NewBot(conf config.Config) *Bot {
 }
 
 func (bot *Bot) Start(ctx context.Context) {
-	for _, model := range bot.conf.Ollama.Models {
-		err := bot.ollama.Pull(context.Background(), &ollamaapi.PullRequest{Model: model, Stream: optional.Pointer(true)}, func(response ollamaapi.ProgressResponse) error {
-			slog.Info("Pulling model", slog.String("name", model), slog.Int64("completed", response.Completed), slog.Int64("total", response.Total))
-			return nil
-		})
-		if err != nil {
-			panic(err)
-		}
-	}
-
 	go func() {
 		slog.Info("River client successfully starter")
 		err := bot.RiverClient.Start(context.Background())
@@ -106,7 +123,9 @@ func (bot *Bot) Start(ctx context.Context) {
 		job, err := bot.RiverClient.Insert(ctx, ChatArgs{
 			ChatID:  c.Chat().ID,
 			Content: c.Text(),
-		}, &river.InsertOpts{MaxAttempts: 1})
+		}, &river.InsertOpts{
+			MaxAttempts: 1,
+		})
 		if err != nil {
 			return err
 		}
@@ -123,6 +142,7 @@ func (bot *Bot) Start(ctx context.Context) {
 	})
 
 	slog.Info("Telegram bot successfully starter")
+
 	bot.API.Start()
 }
 

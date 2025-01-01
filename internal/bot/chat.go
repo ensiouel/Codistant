@@ -2,7 +2,6 @@ package bot
 
 import (
 	"context"
-	"log/slog"
 
 	assistantpkg "codistant/pkg/assistant"
 	"github.com/riverqueue/river"
@@ -21,8 +20,14 @@ func (args ChatArgs) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{
 		MaxAttempts: 1,
 		UniqueOpts: river.UniqueOpts{
-			ByArgs:  true,
-			ByState: []rivertype.JobState{rivertype.JobStateAvailable, rivertype.JobStatePending, rivertype.JobStateRunning, rivertype.JobStateRetryable, rivertype.JobStateScheduled},
+			ByArgs: true,
+			ByState: []rivertype.JobState{
+				rivertype.JobStateAvailable,
+				rivertype.JobStatePending,
+				rivertype.JobStateRunning,
+				rivertype.JobStateRetryable,
+				rivertype.JobStateScheduled,
+			},
 		},
 	}
 }
@@ -38,8 +43,6 @@ func (w *ChatWorker) Work(ctx context.Context, job *river.Job[ChatArgs]) error {
 	if err != nil {
 		return err
 	}
-
-	slog.Info("Chat", slog.String("content", job.Args.Content))
 
 	manager := NewMessageManager(w.BotAPI, origin)
 	return w.AssistantService.Chat(ctx, job.Args.ChatID, job.Args.Content, func(response assistantpkg.ChatResponse) error {
